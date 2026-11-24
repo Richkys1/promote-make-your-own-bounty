@@ -11,16 +11,60 @@
 // stand in for /input and /output:
 //   mkdir -p out && MAKEFUN_INPUT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-mkdirSync(OUTPUT_DIR, { recursive: true });
+// An X post address: https://x.com/<handle>/status/<digits> (or twitter.com,
+// optionally with a www. or mobile. prefix). Anything else is not the entry's post.
+const POST_URL_RE = /^https:\/\/(www\.|mobile\.)?(x\.com|twitter\.com)\/[^/\s]+\/status\/\d+$/;
+
+function fail(message: string): never {
+  console.error(`main.ts: ${message}`);
+  process.exit(1);
+}
+
+const sourcePath = join(INPUT_DIR, 'POST.json');
+let sourceBytes: Buffer;
 try {
-  copyFileSync(join(INPUT_DIR, 'POST.json'), join(OUTPUT_DIR, 'POST.json'));
+  sourceBytes = readFileSync(sourcePath);
+} catch (err) {
+  fail(`POST.json could not be read from ${INPUT_DIR}: ${(err as Error).message}`);
+}
+
+let post: unknown;
+try {
+  post = JSON.parse(sourceBytes!.toString('utf8'));
+} catch {
+  fail('POST.json is not valid JSON.');
+}
+if (typeof post !== 'object' || post === null || Array.isArray(post)) {
+  fail('POST.json must be a JSON object with a "url" string.');
+}
+const url = (post as { url?: unknown }).url;
+if (typeof url !== 'string' || !POST_URL_RE.test(url)) {
+  fail(`POST.json "url" must be an X post address (https://x.com/<handle>/status/<id>), got: ${JSON.stringify(url)}`);
+}
+
+mkdirSync(OUTPUT_DIR, { recursive: true });
+const destPath = join(OUTPUT_DIR, 'POST.json');
+try {
+  copyFileSync(sourcePath, destPath);
 } catch (err) {
   console.error(`POST.json could not be copied from ${INPUT_DIR}: ${(err as Error).message}`);
   process.exit(1);
+}
+
+// The entry depends on the copy being byte-identical: prove it instead of
+// assuming it. A truncated or corrupted copy must fail loudly, not ship.
+let destBytes: Buffer;
+try {
+  destBytes = readFileSync(destPath);
+} catch (err) {
+  fail(`POST.json could not be read back from ${OUTPUT_DIR}: ${(err as Error).message}`);
+}
+if (!destBytes!.equals(sourceBytes!)) {
+  fail(`POST.json in ${OUTPUT_DIR} differs from the source — copy is not byte-identical.`);
 }
